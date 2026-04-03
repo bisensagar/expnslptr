@@ -3,18 +3,20 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { calculateSettlement } from '../lib/settlement'
 
+/* ─── MAIN PAGE ─────────────────────────────────────────────────────────── */
 export default function TripDetail() {
   const { tripId } = useParams()
-  const navigate = useNavigate()
-  const [trip, setTrip] = useState(null)
-  const [members, setMembers] = useState([])
-  const [expenses, setExpenses] = useState([])
-  const [allUsers, setAllUsers] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('expenses') // expenses | members | settle
-  const [showExpenseModal, setShowExpenseModal] = useState(false)
-  const [showMemberModal, setShowMemberModal] = useState(false)
+  const navigate   = useNavigate()
+
+  const [trip,       setTrip]       = useState(null)
+  const [members,    setMembers]    = useState([])
+  const [expenses,   setExpenses]   = useState([])
+  const [allUsers,   setAllUsers]   = useState([])
+  const [loading,    setLoading]    = useState(true)
+  const [tab,        setTab]        = useState('expenses')
   const [settlement, setSettlement] = useState([])
+  const [showExpenseModal, setShowExpenseModal] = useState(false)
+  const [showMemberModal,  setShowMemberModal]  = useState(false)
 
   useEffect(() => { fetchAll() }, [tripId])
 
@@ -24,59 +26,71 @@ export default function TripDetail() {
       { data: tripData },
       { data: membersData },
       { data: expensesData },
-      { data: usersData }
+      { data: usersData },
     ] = await Promise.all([
       supabase.from('trips').select('*').eq('id', tripId).single(),
-      supabase.from('trip_members').select('*, profiles(id, name, email)').eq('trip_id', tripId),
-      supabase.from('expenses').select('*, profiles(name), expense_splits(*, profiles(name))').eq('trip_id', tripId).order('created_at', { ascending: false }),
-      supabase.from('profiles').select('*').eq('is_admin', false)
+      supabase.from('trip_members')
+        .select('*, profiles(id, name, email)')
+        .eq('trip_id', tripId),
+      supabase.from('expenses')
+        .select('*, profiles(id, name), expense_splits(*, profiles(id, name))')
+        .eq('trip_id', tripId)
+        .order('created_at', { ascending: false }),
+      supabase.from('profiles').select('*').eq('is_admin', false).order('name'),
     ])
+    const m = membersData  || []
+    const e = expensesData || []
     setTrip(tripData)
-    setMembers(membersData || [])
-    setExpenses(expensesData || [])
+    setMembers(m)
+    setExpenses(e)
     setAllUsers(usersData || [])
+    setSettlement(calculateSettlement(m, e))
     setLoading(false)
   }
 
   async function settleTrip() {
-    if (!confirm('Mark this trip as settled? This cannot be undone.')) return
+    if (!window.confirm('Mark this trip as settled? This cannot be undone.')) return
     await supabase.from('trips').update({ settled: true }).eq('id', tripId)
     fetchAll()
   }
 
-  function openSettle() {
-    const result = calculateSettlement(members, expenses)
-    setSettlement(result)
-    setTab('settle')
-  }
-
-  async function removeMember(memberId, userId) {
-    if (!confirm('Remove this member? Their splits will remain.')) return
-    await supabase.from('trip_members').delete().eq('id', memberId)
-    fetchAll()
-  }
-
   async function deleteExpense(expenseId) {
-    if (!confirm('Delete this expense?')) return
+    if (!window.confirm('Delete this expense?')) return
     await supabase.from('expenses').delete().eq('id', expenseId)
     fetchAll()
   }
 
-  if (loading) return <div className="loading"><div className="spinner" /></div>
-  if (!trip) return <div>Trip not found</div>
+  async function removeMember(memberId) {
+    if (!window.confirm('Remove this member?')) return
+    await supabase.from('trip_members').delete().eq('id', memberId)
+    fetchAll()
+  }
 
-  const totalExpenses = expenses.reduce((sum, e) => sum + parseFloat(e.amount), 0)
+  function openSettle() {
+    setSettlement(calculateSettlement(members, expenses))
+    setTab('settle')
+  }
+
+  if (loading) return <div className="loading"><div className="spinner" /></div>
+  if (!trip)   return <p style={{ padding: 32, color: 'var(--text3)' }}>Trip not found.</p>
+
+  const total     = expenses.reduce((s, e) => s + parseFloat(e.amount), 0)
   const memberIds = members.map(m => m.user_id)
 
   return (
     <div>
+      {/* Header */}
       <div className="page-header">
         <div>
-          <button className="btn btn-ghost btn-sm" onClick={() => navigate('/admin')} style={{marginBottom:10}}>← Back</button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => navigate('/admin')}
+            style={{ marginBottom: 10 }}
+          >← Back</button>
           <h1 className="page-title">{trip.name}</h1>
           {trip.description && <p className="page-subtitle">{trip.description}</p>}
         </div>
-        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           {trip.settled
             ? <span className="badge badge-green">✅ Settled</span>
             : <button className="btn btn-success" onClick={openSettle}>⚡ Settle Up</button>
@@ -84,10 +98,11 @@ export default function TripDetail() {
         </div>
       </div>
 
-      <div className="grid-3" style={{marginBottom:24}}>
+      {/* Stats */}
+      <div className="grid-3" style={{ marginBottom: 24 }}>
         <div className="stat-card">
           <div className="stat-label">Total Spent</div>
-          <div className="stat-value">₹{totalExpenses.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+          <div className="stat-value">₹{total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Expenses</div>
@@ -99,195 +114,248 @@ export default function TripDetail() {
         </div>
       </div>
 
-      {/* TABS */}
-      <div style={{display:'flex', gap:4, marginBottom:20, background:'var(--surface)', padding:4, borderRadius:'var(--radius-sm)', border:'1px solid var(--border)', width:'fit-content'}}>
-        {['expenses','members','settle'].map(t => (
+      {/* Tab bar */}
+      <div style={{
+        display: 'flex', gap: 4, marginBottom: 20,
+        background: 'var(--surface)', padding: 4,
+        borderRadius: 'var(--radius-sm)',
+        border: '1px solid var(--border)', width: 'fit-content',
+      }}>
+        {[
+          { key: 'expenses', label: '💳 Expenses' },
+          { key: 'members',  label: '👥 Members'  },
+          { key: 'settle',   label: '⚡ Settle'   },
+        ].map(t => (
           <button
-            key={t}
-            onClick={() => { if(t === 'settle') openSettle(); else setTab(t) }}
+            key={t.key}
+            onClick={() => t.key === 'settle' ? openSettle() : setTab(t.key)}
             className="btn btn-sm"
-            style={tab === t ? {background:'var(--accent)',color:'#0a0a0f'} : {background:'transparent',color:'var(--text3)',border:'none'}}
+            style={tab === t.key
+              ? { background: 'var(--accent)', color: '#0a0a0f' }
+              : { background: 'transparent', color: 'var(--text3)', border: 'none' }
+            }
           >
-            {t === 'expenses' ? '💳 Expenses' : t === 'members' ? '👥 Members' : '⚡ Settle'}
+            {t.label}
           </button>
         ))}
       </div>
 
-      {/* EXPENSES TAB */}
+      {/* ── Expenses tab ── */}
       {tab === 'expenses' && (
         <div className="card">
           <div className="card-header">
             <h2 className="card-title">Expenses</h2>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowExpenseModal(true)} disabled={members.length === 0}>+ Add Expense</button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => setShowExpenseModal(true)}
+              disabled={members.length === 0}
+            >+ Add Expense</button>
           </div>
+
           {members.length === 0 && (
-            <div className="alert alert-error">Add members to this trip before adding expenses.</div>
+            <div className="alert alert-error" style={{ marginBottom: 16 }}>
+              Add members to this trip before adding expenses.
+            </div>
           )}
+
           {expenses.length === 0 ? (
-            <div className="empty-state"><div className="icon">💸</div><p>No expenses yet.</p></div>
+            <div className="empty-state">
+              <div className="icon">💸</div>
+              <p>No expenses yet.</p>
+            </div>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Description</th>
-                  <th>Paid By</th>
-                  <th>Amount</th>
-                  <th>Split Among</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {expenses.map(exp => (
-                  <tr key={exp.id}>
-                    <td><strong>{exp.description}</strong></td>
-                    <td>
-                      <div style={{display:'flex',alignItems:'center',gap:8}}>
-                        <div className="avatar" style={{width:24,height:24,fontSize:11}}>{exp.profiles?.name?.[0]}</div>
-                        {exp.profiles?.name}
-                      </div>
-                    </td>
-                    <td><strong style={{color:'var(--accent)'}}>₹{parseFloat(exp.amount).toLocaleString('en-IN', {minimumFractionDigits:2})}</strong></td>
-                    <td>
-                      <div style={{fontSize:12,color:'var(--text3)'}}>
-                        {exp.expense_splits?.map(s => s.profiles?.name).join(', ')}
-                      </div>
-                    </td>
-                    <td>
-                      {!trip.settled && (
-                        <button className="btn btn-danger btn-sm" onClick={() => deleteExpense(exp.id)}>✕</button>
-                      )}
-                    </td>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Description</th>
+                    <th>Paid By</th>
+                    <th>Amount</th>
+                    <th>Split Among</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {expenses.map(exp => (
+                    <tr key={exp.id}>
+                      <td><strong>{exp.description}</strong></td>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div className="avatar" style={{ width: 24, height: 24, fontSize: 11 }}>
+                            {exp.profiles?.name?.[0]}
+                          </div>
+                          {exp.profiles?.name}
+                        </div>
+                      </td>
+                      <td>
+                        <strong style={{ color: 'var(--accent)' }}>
+                          ₹{parseFloat(exp.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </strong>
+                      </td>
+                      <td style={{ fontSize: 12, color: 'var(--text3)' }}>
+                        {(exp.expense_splits || []).map(s => s.profiles?.name).filter(Boolean).join(', ')}
+                      </td>
+                      <td>
+                        {!trip.settled && (
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={() => deleteExpense(exp.id)}
+                          >✕</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
 
-      {/* MEMBERS TAB */}
+      {/* ── Members tab ── */}
       {tab === 'members' && (
         <div className="card">
           <div className="card-header">
             <h2 className="card-title">Members</h2>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowMemberModal(true)}>+ Add Member</button>
+            <button className="btn btn-primary btn-sm" onClick={() => setShowMemberModal(true)}>
+              + Add Member
+            </button>
           </div>
+
           {members.length === 0 ? (
-            <div className="empty-state"><div className="icon">👥</div><p>No members yet.</p></div>
+            <div className="empty-state">
+              <div className="icon">👥</div>
+              <p>No members yet.</p>
+            </div>
           ) : (
-            <table>
-              <thead>
-                <tr><th>Name</th><th>Email</th><th>Joined</th><th></th></tr>
-              </thead>
-              <tbody>
-                {members.map(m => (
-                  <tr key={m.id}>
-                    <td>
-                      <div style={{display:'flex',alignItems:'center',gap:10}}>
-                        <div className="avatar">{m.profiles?.name?.[0]}</div>
-                        {m.profiles?.name}
-                      </div>
-                    </td>
-                    <td style={{color:'var(--text3)'}}>{m.profiles?.email}</td>
-                    <td style={{color:'var(--text3)',fontSize:13}}>{new Date(m.joined_at).toLocaleDateString()}</td>
-                    <td>
-                      {!trip.settled && (
-                        <button className="btn btn-danger btn-sm" onClick={() => removeMember(m.id, m.user_id)}>Remove</button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Name</th><th>Email</th><th>Joined</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {members.map(m => (
+                    <tr key={m.id}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div className="avatar">{m.profiles?.name?.[0]}</div>
+                          {m.profiles?.name}
+                        </div>
+                      </td>
+                      <td style={{ color: 'var(--text3)' }}>{m.profiles?.email}</td>
+                      <td style={{ color: 'var(--text3)', fontSize: 13 }}>
+                        {new Date(m.joined_at).toLocaleDateString('en-IN')}
+                      </td>
+                      <td>
+                        {!trip.settled && (
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={() => removeMember(m.id)}
+                          >Remove</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
 
-      {/* SETTLE TAB */}
+      {/* ── Settle tab ── */}
       {tab === 'settle' && (
         <div>
-          <div className="card" style={{marginBottom:16}}>
+          <div className="card" style={{ marginBottom: 16 }}>
             <div className="card-header">
               <h2 className="card-title">Settlement Summary</h2>
               {!trip.settled && (
-                <button className="btn btn-success" onClick={settleTrip}>Mark as Settled</button>
+                <button className="btn btn-success" onClick={settleTrip}>
+                  Mark as Settled
+                </button>
               )}
             </div>
+
             {settlement.length === 0 ? (
               <div className="empty-state">
                 <div className="icon">🎉</div>
-                <p>Everyone is settled up! No payments needed.</p>
+                <p>Everyone is square! No payments needed.</p>
               </div>
             ) : (
-              <div>
-                <p style={{fontSize:14, color:'var(--text3)', marginBottom:16}}>
+              <>
+                <p style={{ fontSize: 14, color: 'var(--text3)', marginBottom: 16 }}>
                   Minimum transactions to settle all debts:
                 </p>
                 {settlement.map((s, i) => (
                   <div key={i} className="settle-row">
                     <div className="avatar">{s.from[0]}</div>
                     <div>
-                      <div style={{fontWeight:600}}>{s.from}</div>
-                      <div style={{fontSize:12,color:'var(--text3)'}}>pays</div>
+                      <div style={{ fontWeight: 600 }}>{s.from}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text3)' }}>pays</div>
                     </div>
-                    <div style={{color:'var(--text3)',fontSize:20}}>→</div>
+                    <div style={{ color: 'var(--text3)', fontSize: 20 }}>→</div>
                     <div className="avatar">{s.to[0]}</div>
-                    <div>
-                      <div style={{fontWeight:600}}>{s.to}</div>
+                    <div style={{ fontWeight: 600 }}>{s.to}</div>
+                    <div className="settle-amount">
+                      ₹{s.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                     </div>
-                    <div className="settle-amount">₹{s.amount.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
                   </div>
                 ))}
-              </div>
+              </>
             )}
           </div>
 
-          {/* Per-person summary */}
+          {/* Per-person breakdown */}
           <div className="card">
             <div className="card-header">
-              <h2 className="card-title">Per Person Breakdown</h2>
+              <h2 className="card-title">Per-Person Breakdown</h2>
             </div>
-            <table>
-              <thead>
-                <tr><th>Member</th><th>Total Paid</th><th>Total Owed</th><th>Balance</th></tr>
-              </thead>
-              <tbody>
-                {members.map(m => {
-                  const paid = expenses
-                    .filter(e => e.paid_by === m.user_id)
-                    .reduce((sum, e) => sum + parseFloat(e.amount), 0)
-                  const owed = expenses
-                    .flatMap(e => e.expense_splits || [])
-                    .filter(s => s.user_id === m.user_id)
-                    .reduce((sum, s) => sum + parseFloat(s.amount), 0)
-                  const balance = paid - owed
-                  return (
-                    <tr key={m.id}>
-                      <td>
-                        <div style={{display:'flex',alignItems:'center',gap:8}}>
-                          <div className="avatar">{m.profiles?.name?.[0]}</div>
-                          {m.profiles?.name}
-                        </div>
-                      </td>
-                      <td>₹{paid.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
-                      <td>₹{owed.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
-                      <td>
-                        <span style={{color: balance >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight:600}}>
-                          {balance >= 0 ? '+' : ''}₹{balance.toLocaleString('en-IN',{minimumFractionDigits:2})}
-                        </span>
-                        <div style={{fontSize:12,color:'var(--text3)'}}>
-                          {balance > 0.01 ? 'gets back' : balance < -0.01 ? 'owes' : 'settled'}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Member</th><th>Total Paid</th><th>Total Owed</th><th>Balance</th></tr>
+                </thead>
+                <tbody>
+                  {members.map(m => {
+                    const paid = expenses
+                      .filter(e => e.paid_by === m.user_id)
+                      .reduce((s, e) => s + parseFloat(e.amount), 0)
+                    const owed = expenses
+                      .flatMap(e => e.expense_splits || [])
+                      .filter(s => s.user_id === m.user_id)
+                      .reduce((s, sp) => s + parseFloat(sp.amount), 0)
+                    const bal = paid - owed
+                    return (
+                      <tr key={m.id}>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div className="avatar">{m.profiles?.name?.[0]}</div>
+                            {m.profiles?.name}
+                          </div>
+                        </td>
+                        <td>₹{paid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                        <td>₹{owed.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                        <td>
+                          <span style={{ color: bal >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>
+                            {bal >= 0 ? '+' : ''}₹{bal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </span>
+                          <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                            {bal >  0.01 ? 'gets back'
+                            : bal < -0.01 ? 'owes'
+                            : '✓ even'}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
 
+      {/* Modals */}
       {showExpenseModal && (
         <ExpenseModal
           tripId={tripId}
@@ -309,46 +377,53 @@ export default function TripDetail() {
   )
 }
 
-// ── ADD EXPENSE MODAL ──
+/* ─── ADD EXPENSE MODAL ─────────────────────────────────────────────────── */
 function ExpenseModal({ tripId, members, onClose, onSaved }) {
   const [description, setDescription] = useState('')
-  const [amount, setAmount] = useState('')
-  const [paidBy, setPaidBy] = useState(members[0]?.user_id || '')
-  const [splitAmong, setSplitAmong] = useState(members.map(m => m.user_id))
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const [amount,      setAmount]      = useState('')
+  const [paidBy,      setPaidBy]      = useState(members[0]?.user_id || '')
+  const [splitAmong,  setSplitAmong]  = useState(members.map(m => m.user_id))
+  const [saving,      setSaving]      = useState(false)
+  const [error,       setError]       = useState('')
 
-  function toggleSplit(userId) {
+  const toggle = (id) =>
     setSplitAmong(prev =>
-      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
     )
-  }
 
   async function handleSave() {
-    if (!description.trim()) { setError('Description required'); return }
-    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) { setError('Valid amount required'); return }
-    if (!paidBy) { setError('Select who paid'); return }
-    if (splitAmong.length === 0) { setError('Select at least one person to split with'); return }
+    if (!description.trim())                       { setError('Description is required'); return }
+    const amt = parseFloat(amount)
+    if (!amount || isNaN(amt) || amt <= 0)         { setError('Enter a valid amount');    return }
+    if (!paidBy)                                   { setError('Select who paid');         return }
+    if (splitAmong.length === 0)                   { setError('Select at least one person to split with'); return }
 
     setSaving(true)
-    const totalAmount = parseFloat(amount)
-    const splitAmount = totalAmount / splitAmong.length
+    const splitAmt = amt / splitAmong.length
 
-    const { data: expenseData, error: expErr } = await supabase
+    // Insert expense
+    const { data: expRow, error: expErr } = await supabase
       .from('expenses')
-      .insert({ trip_id: tripId, paid_by: paidBy, description: description.trim(), amount: totalAmount })
+      .insert({
+        trip_id:     tripId,
+        paid_by:     paidBy,
+        description: description.trim(),
+        amount:      amt,
+      })
       .select()
       .single()
 
     if (expErr) { setError(expErr.message); setSaving(false); return }
 
-    const splits = splitAmong.map(userId => ({
-      expense_id: expenseData.id,
-      user_id: userId,
-      amount: parseFloat(splitAmount.toFixed(2))
-    }))
+    // Insert splits
+    const { error: splitErr } = await supabase.from('expense_splits').insert(
+      splitAmong.map(uid => ({
+        expense_id: expRow.id,
+        user_id:    uid,
+        amount:     parseFloat(splitAmt.toFixed(2)),
+      }))
+    )
 
-    const { error: splitErr } = await supabase.from('expense_splits').insert(splits)
     setSaving(false)
     if (splitErr) { setError(splitErr.message); return }
     onSaved(); onClose()
@@ -366,12 +441,26 @@ function ExpenseModal({ tripId, members, onClose, onSaved }) {
 
         <div className="form-group">
           <label className="form-label">Description *</label>
-          <input className="form-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Hotel, Dinner, Cab fare" autoFocus />
+          <input
+            className="form-input"
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            placeholder="e.g. Hotel, Dinner, Cab"
+            autoFocus
+          />
         </div>
 
         <div className="form-group">
           <label className="form-label">Amount (₹) *</label>
-          <input className="form-input" type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
+          <input
+            className="form-input"
+            type="number"
+            min="0"
+            step="0.01"
+            value={amount}
+            onChange={e => setAmount(e.target.value)}
+            placeholder="0.00"
+          />
         </div>
 
         <div className="form-group">
@@ -385,54 +474,55 @@ function ExpenseModal({ tripId, members, onClose, onSaved }) {
 
         <div className="form-group">
           <label className="form-label">Split Among</label>
-          <div className="chip-list" style={{marginBottom:8}}>
+          <div className="chip-list" style={{ marginBottom: 8 }}>
             {members.map(m => (
-              <label key={m.user_id} style={{cursor:'pointer'}}>
-                <div
-                  className="chip"
-                  style={splitAmong.includes(m.user_id)
-                    ? {background:'rgba(240,192,64,0.12)', borderColor:'var(--accent)', color:'var(--accent)'}
-                    : {}
-                  }
-                  onClick={() => toggleSplit(m.user_id)}
-                >
-                  {splitAmong.includes(m.user_id) ? '✓ ' : ''}{m.profiles?.name}
-                </div>
-              </label>
+              <div
+                key={m.user_id}
+                className="chip"
+                style={splitAmong.includes(m.user_id)
+                  ? { background: 'rgba(240,192,64,0.12)', borderColor: 'var(--accent)', color: 'var(--accent)', cursor: 'pointer' }
+                  : { cursor: 'pointer' }
+                }
+                onClick={() => toggle(m.user_id)}
+              >
+                {splitAmong.includes(m.user_id) ? '✓ ' : ''}{m.profiles?.name}
+              </div>
             ))}
           </div>
           {perPerson && (
-            <div style={{fontSize:13,color:'var(--text3)'}}>
-              Each person pays: <strong style={{color:'var(--accent)'}}>₹{perPerson}</strong>
+            <div style={{ fontSize: 13, color: 'var(--text3)' }}>
+              Each person: <strong style={{ color: 'var(--accent)' }}>₹{perPerson}</strong>
             </div>
           )}
         </div>
 
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Adding…' : 'Add Expense'}</button>
+          <button className="btn btn-ghost"   onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? 'Adding…' : 'Add Expense'}
+          </button>
         </div>
       </div>
     </div>
   )
 }
 
-// ── ADD MEMBER MODAL ──
+/* ─── ADD MEMBER MODAL ──────────────────────────────────────────────────── */
 function MemberModal({ tripId, allUsers, existingMemberIds, onClose, onSaved }) {
   const [selected, setSelected] = useState([])
-  const [saving, setSaving] = useState(false)
+  const [saving,   setSaving]   = useState(false)
 
   const available = allUsers.filter(u => !existingMemberIds.includes(u.id))
 
-  function toggleUser(id) {
+  const toggle = (id) =>
     setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
-  }
 
   async function handleSave() {
     if (selected.length === 0) return
     setSaving(true)
-    const rows = selected.map(userId => ({ trip_id: tripId, user_id: userId }))
-    await supabase.from('trip_members').insert(rows)
+    await supabase.from('trip_members').insert(
+      selected.map(uid => ({ trip_id: tripId, user_id: uid }))
+    )
     setSaving(false)
     onSaved(); onClose()
   }
@@ -441,37 +531,52 @@ function MemberModal({ tripId, allUsers, existingMemberIds, onClose, onSaved }) 
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <h2 className="modal-title">Add Members</h2>
+
         {available.length === 0 ? (
-          <p style={{color:'var(--text3)',fontSize:14}}>All users are already in this trip, or no users created yet.</p>
+          <p style={{ color: 'var(--text3)', fontSize: 14 }}>
+            All existing users are already in this trip, or no users have been created yet.
+          </p>
         ) : (
           <>
-            <p style={{fontSize:14,color:'var(--text3)',marginBottom:16}}>Select users to add to this trip:</p>
+            <p style={{ fontSize: 14, color: 'var(--text3)', marginBottom: 16 }}>
+              Select users to add:
+            </p>
             {available.map(u => (
               <div
                 key={u.id}
-                onClick={() => toggleUser(u.id)}
+                onClick={() => toggle(u.id)}
                 style={{
-                  display:'flex', alignItems:'center', gap:12,
-                  padding:'12px', borderRadius:'var(--radius-sm)',
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: 12, borderRadius: 'var(--radius-sm)',
                   border: `1px solid ${selected.includes(u.id) ? 'var(--accent)' : 'var(--border)'}`,
                   background: selected.includes(u.id) ? 'rgba(240,192,64,0.08)' : 'var(--surface2)',
-                  cursor:'pointer', marginBottom:8, transition:'all 0.15s'
+                  cursor: 'pointer', marginBottom: 8, transition: 'all 0.15s',
                 }}
               >
-                <div className="avatar">{u.name[0]}</div>
+                <div className="avatar">{u.name?.[0]?.toUpperCase()}</div>
                 <div>
-                  <div style={{fontWeight:600,fontSize:14}}>{u.name}</div>
-                  <div style={{fontSize:12,color:'var(--text3)'}}>{u.email}</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{u.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text3)' }}>{u.email}</div>
                 </div>
-                {selected.includes(u.id) && <span style={{marginLeft:'auto',color:'var(--accent)'}}>✓</span>}
+                {selected.includes(u.id) && (
+                  <span style={{ marginLeft: 'auto', color: 'var(--accent)' }}>✓</span>
+                )}
               </div>
             ))}
           </>
         )}
+
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving || selected.length === 0}>
-            {saving ? 'Adding…' : `Add ${selected.length > 0 ? selected.length : ''} Member${selected.length !== 1 ? 's' : ''}`}
+          <button className="btn btn-ghost"   onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={handleSave}
+            disabled={saving || selected.length === 0}
+          >
+            {saving
+              ? 'Adding…'
+              : `Add ${selected.length > 0 ? selected.length + ' ' : ''}Member${selected.length !== 1 ? 's' : ''}`
+            }
           </button>
         </div>
       </div>

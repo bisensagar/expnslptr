@@ -1,26 +1,30 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('')
+  const [email,    setEmail]    = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const { signIn } = useAuth()
+  const [error,    setError]    = useState('')
+  const [loading,  setLoading]  = useState(false)
+  const { signIn, user, profile } = useAuth()
   const navigate = useNavigate()
+
+  // Redirect if already logged in
+  useEffect(() => {
+    if (!user) return
+    if (profile?.is_admin) navigate('/admin',    { replace: true })
+    else                   navigate('/my-trips', { replace: true })
+  }, [user, profile])
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
     setLoading(true)
-    const { error: signInError } = await signIn(email.trim().toLowerCase(), password)
+    const { error: err } = await signIn(email.trim().toLowerCase(), password)
     setLoading(false)
-    if (signInError) {
-      setError('Invalid email or password. Please try again.')
-      return
-    }
-    // Navigation handled by App.jsx via auth state change + profile.is_admin check
+    if (err) setError(err.message)
+    // navigation is handled by the useEffect above once profile loads
   }
 
   return (
@@ -71,14 +75,13 @@ export default function LoginPage() {
         </form>
 
         <div style={{
-          marginTop: 24,
-          padding: '14px 16px',
+          marginTop: 24, padding: 14,
           background: 'var(--surface2)',
           borderRadius: 'var(--radius-sm)',
-          fontSize: 13,
-          color: 'var(--text3)'
+          fontSize: 13, color: 'var(--text3)'
         }}>
-          <strong style={{ color: 'var(--text2)' }}>New here?</strong> Your admin creates your account and shares your credentials.
+          <strong style={{ color: 'var(--text2)' }}>First time?</strong>
+          {' '}Your admin sets up your account and shares your login details.
         </div>
       </div>
     </div>

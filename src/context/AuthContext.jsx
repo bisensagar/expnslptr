@@ -1,67 +1,91 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext({})
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
-  const [profile, setProfile] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [user, setUser]           = useState(null)
+  const [profile, setProfile]     = useState(null)
+  // loading stays true until BOTH the session check AND profile fetch are done
+  const [loading, setLoading]     = useState(true)
+  const fetchingRef               = useRef(false)   // prevents duplicate fetches
 
   useEffect(() => {
-    // Get initial session
+    // 1. Check for an existing session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
       if (session?.user) {
-        fetchProfile(session.user.id)
+        setUser(session.user)
+        loadProfile(session.user.id)
       } else {
         setLoading(false)
       }
     })
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-      if (session?.user) {
-        fetchProfile(session.user.id)
-      } else {
-        setProfile(null)
-        setLoading(false)
+    // 2. Listen for sign-in / sign-out events
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        if (event === 'SIGNED_OUT') {
+          setUser(null)
+          setProfile(null)
+          setLoading(false)
+          fetchingRef.current = false
+          return
+        }
+
+        if (session?.user && !fetchingRef.current) {
+          setUser(session.user)
+          loadProfile(session.user.id)
+        }
       }
-    })
+    )
 
     return () => subscription.unsubscribe()
   }, [])
 
-  async function fetchProfile(userId) {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single()
+  // Retry up to 5 times — profile row created by DB trigger may lag slightly
+  async function loadProfile(userId) {
+    if (fetchingRef.current) return
+    fetchingRef.current = true
 
-    if (!error && data) {
-      setProfile(data)
-    } else {
-      // Profile may not exist yet if email not confirmed — retry once
-      setTimeout(async () => {
-        const { data: retryData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', userId)
-          .single()
-        setProfile(retryData || null)
-      }, 1500)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle()
+
+      if (data) {
+        setProfile(data)
+        setLoading(false)
+        fetchingRef.current = false
+        return
+      }
+
+      // Wait before retrying (100ms, 300ms, 600ms, 1000ms)
+      if (attempt < 4) {
+        await new Promise(r => setTimeout(r, [100, 300, 600, 1000][attempt]))
+      }
     }
+
+    // Profile genuinely not found after retries
+    setProfile(null)
     setLoading(false)
+    fetchingRef.current = false
   }
 
   async function signIn(email, password) {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    return { data, error }
+    // Reset so loadProfile can run fresh
+    fetchingRef.current = false
+    setLoading(true)
+    const result = await supabase.auth.signInWithPassword({ email, password })
+    if (result.error) {
+      setLoading(false)
+    }
+    return result
   }
 
   async function signOut() {
+    setLoading(true)
     await supabase.auth.signOut()
   }
 
