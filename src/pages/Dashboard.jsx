@@ -15,19 +15,28 @@ export default function Dashboard() {
   async function fetchData() {
     setLoading(true)
     const [{ data: tripsData }, { data: usersData }] = await Promise.all([
-      supabase
-        .from('trips')
-        .select('*, trip_members(count)')
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('profiles')
-        .select('*')
-        .eq('is_admin', false)
-        .order('name'),
+      supabase.from('trips').select('*, trip_members(count)').order('created_at', { ascending: false }),
+      supabase.from('profiles').select('*').eq('is_admin', false).order('name'),
     ])
-    setTrips(tripsData  || [])
-    setUsers(usersData  || [])
+    setTrips(tripsData || [])
+    setUsers(usersData || [])
     setLoading(false)
+  }
+
+  async function deleteTrip(e, tripId) {
+    e.stopPropagation() // don't navigate to trip
+    if (!window.confirm('Delete this trip and ALL its expenses? This cannot be undone.')) return
+    const { error } = await supabase.from('trips').delete().eq('id', tripId)
+    if (error) { alert('Delete failed: ' + error.message); return }
+    fetchData()
+  }
+
+  async function deleteUser(userId, userName) {
+    if (!window.confirm(`Delete user "${userName}"? They will be removed from all trips.`)) return
+    // Delete profile row — cascade removes trip_members rows
+    const { error } = await supabase.from('profiles').delete().eq('id', userId)
+    if (error) { alert('Delete failed: ' + error.message); return }
+    fetchData()
   }
 
   return (
@@ -79,9 +88,17 @@ export default function Dashboard() {
                 className="trip-card"
                 onClick={() => navigate(`/admin/trips/${trip.id}`)}
               >
-                <div className="trip-card-name">{trip.name}</div>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                  <div className="trip-card-name" style={{ flex: 1 }}>{trip.name}</div>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    style={{ flexShrink: 0, padding: '4px 8px', fontSize: 12 }}
+                    onClick={(e) => deleteTrip(e, trip.id)}
+                    title="Delete trip"
+                  >🗑</button>
+                </div>
                 {trip.description && (
-                  <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 8, marginTop: 4 }}>
                     {trip.description}
                   </div>
                 )}
@@ -114,6 +131,7 @@ export default function Dashboard() {
                   <th>Name</th>
                   <th>Email</th>
                   <th>Joined</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -128,6 +146,12 @@ export default function Dashboard() {
                     <td style={{ color: 'var(--text3)' }}>{u.email}</td>
                     <td style={{ color: 'var(--text3)', fontSize: 13 }}>
                       {new Date(u.created_at).toLocaleDateString('en-IN')}
+                    </td>
+                    <td>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => deleteUser(u.id, u.name)}
+                      >Remove</button>
                     </td>
                   </tr>
                 ))}
@@ -155,19 +179,14 @@ function TripModal({ onClose, onSaved }) {
   const [error,       setError]       = useState('')
 
   async function handleSave() {
-    if (!name.trim()) { setError("Trip name is required"); return }
+    if (!name.trim()) { setError('Trip name is required'); return }
     setSaving(true)
-    setError("")
+    setError('')
     const { error: err } = await supabase
-      .from("trips")
+      .from('trips')
       .insert({ name: name.trim(), description: description.trim() })
-      .select()
     setSaving(false)
-    if (err) {
-      console.error("Trip insert error:", err)
-      setError(`Error: ${err.message} (code: ${err.code})`)
-      return
-    }
+    if (err) { setError('Failed: ' + err.message); return }
     onSaved()
     onClose()
   }
@@ -177,7 +196,6 @@ function TripModal({ onClose, onSaved }) {
       <div className="modal">
         <h2 className="modal-title">Create New Trip</h2>
         {error && <div className="alert alert-error">{error}</div>}
-
         <div className="form-group">
           <label className="form-label">Trip / Project Name *</label>
           <input
@@ -199,7 +217,6 @@ function TripModal({ onClose, onSaved }) {
             rows={3}
           />
         </div>
-
         <div className="modal-actions">
           <button className="btn btn-ghost"   onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
@@ -213,10 +230,9 @@ function TripModal({ onClose, onSaved }) {
 
 /* ─── CREATE USER MODAL ─────────────────────────────────────────────────── */
 /*
-  Uses supabase.auth.signUp() — works from the browser with the anon key.
-  IMPORTANT: In Supabase Dashboard → Authentication → Providers → Email,
-  turn OFF "Confirm email" so users can log in immediately without
-  verifying their inbox.
+  Uses a SEPARATE supabase client for signUp so the admin's own
+  session is never affected. The anon client is re-instantiated
+  just for the signup call, then discarded.
 */
 function UserModal({ onClose, onSaved }) {
   const [name,     setName]     = useState('')
@@ -236,7 +252,16 @@ function UserModal({ onClose, onSaved }) {
     setSaving(true)
     setError('')
 
-    const { data, error: signUpErr } = await supabase.auth.signUp({
+    // Use a FRESH supabase client so this signUp call doesn't
+    // interfere with the admin's existing authenticated session.
+    const { createClient } = await import('@supabase/supabase-js')
+    const tmpClient = createClient(
+      import.meta.env.VITE_SUPABASE_URL,
+      import.meta.env.VITE_SUPABASE_ANON_KEY,
+      { auth: { persistSession: false, autoRefreshToken: false } }
+    )
+
+    const { data, error: signUpErr } = await tmpClient.auth.signUp({
       email:    email.trim().toLowerCase(),
       password: password.trim(),
       options:  { data: { name: name.trim(), is_admin: false } },
@@ -248,17 +273,21 @@ function UserModal({ onClose, onSaved }) {
       return
     }
 
-    // Upsert profile row in case the trigger fires before metadata is set
+    // Upsert profile in case the DB trigger hasn't fired yet
     if (data?.user?.id) {
-      const { error: profileErr } = await supabase.from('profiles').upsert(
-        { id: data.user.id, name: name.trim(), email: email.trim().toLowerCase(), is_admin: false },
+      await supabase.from('profiles').upsert(
+        {
+          id:       data.user.id,
+          name:     name.trim(),
+          email:    email.trim().toLowerCase(),
+          is_admin: false,
+        },
         { onConflict: 'id' }
       )
-      if (profileErr) console.warn('Profile upsert warning:', profileErr.message)
     }
 
     setSaving(false)
-    setSuccess(`✅ User "${name}" created! Credentials — Email: ${email.trim().toLowerCase()}  Password: ${password.trim()}`)
+    setSuccess(`✅ User "${name}" created!\nEmail: ${email.trim().toLowerCase()}\nPassword: ${password.trim()}`)
     setTimeout(() => { onSaved(); onClose() }, 4000)
   }
 
@@ -267,59 +296,44 @@ function UserModal({ onClose, onSaved }) {
       <div className="modal">
         <h2 className="modal-title">Add New User</h2>
         {error   && <div className="alert alert-error">{error}</div>}
-        {success && <div className="alert alert-success">{success}</div>}
+        {success && (
+          <div className="alert alert-success" style={{ whiteSpace: 'pre-line' }}>{success}</div>
+        )}
 
         <div style={{
           padding: '10px 14px',
           background: 'rgba(64,144,240,0.08)',
           border: '1px solid rgba(64,144,240,0.2)',
           borderRadius: 'var(--radius-sm)',
-          fontSize: 13, color: '#80b0f0', marginBottom: 16
+          fontSize: 13, color: '#80b0f0', marginBottom: 16,
         }}>
-          💡 User logs in with the email + password you set here. Share these credentials directly.
+          💡 User logs in with the email + password you set here. Share credentials directly.
         </div>
 
         <div className="form-group">
           <label className="form-label">Full Name *</label>
-          <input
-            className="form-input"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="Rahul Sharma"
-            autoFocus
-            disabled={!!success}
-          />
+          <input className="form-input" value={name} onChange={e => setName(e.target.value)}
+            placeholder="Rahul Sharma" autoFocus disabled={!!success} />
         </div>
         <div className="form-group">
           <label className="form-label">Email *</label>
-          <input
-            className="form-input"
-            type="email"
-            value={email}
+          <input className="form-input" type="email" value={email}
             onChange={e => setEmail(e.target.value)}
-            placeholder="rahul@example.com"
-            disabled={!!success}
-          />
+            placeholder="rahul@example.com" disabled={!!success} />
         </div>
         <div className="form-group">
           <label className="form-label">Password * (min 6 chars)</label>
-          <input
-            className="form-input"
-            type="text"
-            value={password}
+          <input className="form-input" type="text" value={password}
             onChange={e => setPassword(e.target.value)}
-            placeholder="Share this with the user"
-            disabled={!!success}
-          />
+            placeholder="Share this with the user" disabled={!!success} />
         </div>
 
         <div className="modal-actions">
-          <button className="btn btn-ghost"   onClick={onClose}>Cancel</button>
-          <button
-            className="btn btn-primary"
-            onClick={handleSave}
-            disabled={saving || !!success}
-          >
+          <button className="btn btn-ghost" onClick={onClose}>
+            {success ? 'Close' : 'Cancel'}
+          </button>
+          <button className="btn btn-primary" onClick={handleSave}
+            disabled={saving || !!success}>
             {saving ? 'Creating…' : 'Create User'}
           </button>
         </div>

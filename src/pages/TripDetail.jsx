@@ -48,21 +48,31 @@ export default function TripDetail() {
     setLoading(false)
   }
 
+  async function deleteTrip() {
+    if (!window.confirm('Delete this entire trip and all its expenses? This cannot be undone.')) return
+    const { error } = await supabase.from('trips').delete().eq('id', tripId)
+    if (error) { alert('Delete failed: ' + error.message); return }
+    navigate('/admin')
+  }
+
   async function settleTrip() {
     if (!window.confirm('Mark this trip as settled? This cannot be undone.')) return
-    await supabase.from('trips').update({ settled: true }).eq('id', tripId)
+    const { error } = await supabase.from('trips').update({ settled: true }).eq('id', tripId)
+    if (error) { alert('Failed: ' + error.message); return }
     fetchAll()
   }
 
   async function deleteExpense(expenseId) {
     if (!window.confirm('Delete this expense?')) return
-    await supabase.from('expenses').delete().eq('id', expenseId)
+    const { error } = await supabase.from('expenses').delete().eq('id', expenseId)
+    if (error) { alert('Delete failed: ' + error.message); return }
     fetchAll()
   }
 
   async function removeMember(memberId) {
-    if (!window.confirm('Remove this member?')) return
-    await supabase.from('trip_members').delete().eq('id', memberId)
+    if (!window.confirm('Remove this member from the trip?')) return
+    const { error } = await supabase.from('trip_members').delete().eq('id', memberId)
+    if (error) { alert('Remove failed: ' + error.message); return }
     fetchAll()
   }
 
@@ -91,10 +101,16 @@ export default function TripDetail() {
           {trip.description && <p className="page-subtitle">{trip.description}</p>}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          {trip.settled
-            ? <span className="badge badge-green">✅ Settled</span>
-            : <button className="btn btn-success" onClick={openSettle}>⚡ Settle Up</button>
-          }
+          {trip.settled ? (
+            <span className="badge badge-green">✅ Settled</span>
+          ) : (
+            <button className="btn btn-success" onClick={openSettle}>⚡ Settle Up</button>
+          )}
+          {!trip.settled && (
+            <button className="btn btn-danger btn-sm" onClick={deleteTrip} title="Delete trip">
+              🗑 Delete Trip
+            </button>
+          )}
         </div>
       </div>
 
@@ -145,19 +161,20 @@ export default function TripDetail() {
         <div className="card">
           <div className="card-header">
             <h2 className="card-title">Expenses</h2>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => setShowExpenseModal(true)}
-              disabled={members.length === 0}
-            >+ Add Expense</button>
+            {!trip.settled && (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => setShowExpenseModal(true)}
+                disabled={members.length === 0}
+                title={members.length === 0 ? 'Add members first' : ''}
+              >+ Add Expense</button>
+            )}
           </div>
-
           {members.length === 0 && (
             <div className="alert alert-error" style={{ marginBottom: 16 }}>
-              Add members to this trip before adding expenses.
+              ⚠️ Add members to this trip before adding expenses.
             </div>
           )}
-
           {expenses.length === 0 ? (
             <div className="empty-state">
               <div className="icon">💸</div>
@@ -217,15 +234,16 @@ export default function TripDetail() {
         <div className="card">
           <div className="card-header">
             <h2 className="card-title">Members</h2>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowMemberModal(true)}>
-              + Add Member
-            </button>
+            {!trip.settled && (
+              <button className="btn btn-primary btn-sm" onClick={() => setShowMemberModal(true)}>
+                + Add Member
+              </button>
+            )}
           </div>
-
           {members.length === 0 ? (
             <div className="empty-state">
               <div className="icon">👥</div>
-              <p>No members yet.</p>
+              <p>No members yet. Add people to split expenses with.</p>
             </div>
           ) : (
             <div className="table-wrap">
@@ -271,11 +289,10 @@ export default function TripDetail() {
               <h2 className="card-title">Settlement Summary</h2>
               {!trip.settled && (
                 <button className="btn btn-success" onClick={settleTrip}>
-                  Mark as Settled
+                  ✅ Mark as Settled
                 </button>
               )}
             </div>
-
             {settlement.length === 0 ? (
               <div className="empty-state">
                 <div className="icon">🎉</div>
@@ -313,7 +330,7 @@ export default function TripDetail() {
             <div className="table-wrap">
               <table>
                 <thead>
-                  <tr><th>Member</th><th>Total Paid</th><th>Total Owed</th><th>Balance</th></tr>
+                  <tr><th>Member</th><th>Total Paid</th><th>Share Owed</th><th>Balance</th></tr>
                 </thead>
                 <tbody>
                   {members.map(m => {
@@ -392,30 +409,24 @@ function ExpenseModal({ tripId, members, onClose, onSaved }) {
     )
 
   async function handleSave() {
-    if (!description.trim())                       { setError('Description is required'); return }
+    if (!description.trim())               { setError('Description is required'); return }
     const amt = parseFloat(amount)
-    if (!amount || isNaN(amt) || amt <= 0)         { setError('Enter a valid amount');    return }
-    if (!paidBy)                                   { setError('Select who paid');         return }
-    if (splitAmong.length === 0)                   { setError('Select at least one person to split with'); return }
+    if (!amount || isNaN(amt) || amt <= 0) { setError('Enter a valid amount');    return }
+    if (!paidBy)                           { setError('Select who paid');         return }
+    if (splitAmong.length === 0)           { setError('Select at least one person to split with'); return }
 
     setSaving(true)
+    setError('')
     const splitAmt = amt / splitAmong.length
 
-    // Insert expense
     const { data: expRow, error: expErr } = await supabase
       .from('expenses')
-      .insert({
-        trip_id:     tripId,
-        paid_by:     paidBy,
-        description: description.trim(),
-        amount:      amt,
-      })
+      .insert({ trip_id: tripId, paid_by: paidBy, description: description.trim(), amount: amt })
       .select()
       .single()
 
-    if (expErr) { setError(expErr.message); setSaving(false); return }
+    if (expErr) { setError('Failed to add expense: ' + expErr.message); setSaving(false); return }
 
-    // Insert splits
     const { error: splitErr } = await supabase.from('expense_splits').insert(
       splitAmong.map(uid => ({
         expense_id: expRow.id,
@@ -425,8 +436,9 @@ function ExpenseModal({ tripId, members, onClose, onSaved }) {
     )
 
     setSaving(false)
-    if (splitErr) { setError(splitErr.message); return }
-    onSaved(); onClose()
+    if (splitErr) { setError('Failed to save splits: ' + splitErr.message); return }
+    onSaved()
+    onClose()
   }
 
   const perPerson = splitAmong.length > 0 && amount
@@ -449,20 +461,18 @@ function ExpenseModal({ tripId, members, onClose, onSaved }) {
             autoFocus
           />
         </div>
-
         <div className="form-group">
           <label className="form-label">Amount (₹) *</label>
           <input
             className="form-input"
             type="number"
-            min="0"
+            min="0.01"
             step="0.01"
             value={amount}
             onChange={e => setAmount(e.target.value)}
             placeholder="0.00"
           />
         </div>
-
         <div className="form-group">
           <label className="form-label">Paid By *</label>
           <select className="form-input" value={paidBy} onChange={e => setPaidBy(e.target.value)}>
@@ -471,7 +481,6 @@ function ExpenseModal({ tripId, members, onClose, onSaved }) {
             ))}
           </select>
         </div>
-
         <div className="form-group">
           <label className="form-label">Split Among</label>
           <div className="chip-list" style={{ marginBottom: 8 }}>
@@ -511,6 +520,7 @@ function ExpenseModal({ tripId, members, onClose, onSaved }) {
 function MemberModal({ tripId, allUsers, existingMemberIds, onClose, onSaved }) {
   const [selected, setSelected] = useState([])
   const [saving,   setSaving]   = useState(false)
+  const [error,    setError]    = useState('')
 
   const available = allUsers.filter(u => !existingMemberIds.includes(u.id))
 
@@ -520,26 +530,32 @@ function MemberModal({ tripId, allUsers, existingMemberIds, onClose, onSaved }) 
   async function handleSave() {
     if (selected.length === 0) return
     setSaving(true)
-    await supabase.from('trip_members').insert(
+    setError('')
+    const { error: err } = await supabase.from('trip_members').insert(
       selected.map(uid => ({ trip_id: tripId, user_id: uid }))
     )
     setSaving(false)
-    onSaved(); onClose()
+    if (err) { setError('Failed to add members: ' + err.message); return }
+    onSaved()
+    onClose()
   }
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <h2 className="modal-title">Add Members</h2>
+        {error && <div className="alert alert-error">{error}</div>}
 
         {available.length === 0 ? (
-          <p style={{ color: 'var(--text3)', fontSize: 14 }}>
-            All existing users are already in this trip, or no users have been created yet.
-          </p>
+          <div className="empty-state" style={{ paddingTop: 20 }}>
+            <div className="icon">👥</div>
+            <p>All users are already in this trip, or no users have been created yet.</p>
+            <p style={{ marginTop: 8, fontSize: 13 }}>Go to Dashboard → Add User to create new users.</p>
+          </div>
         ) : (
           <>
             <p style={{ fontSize: 14, color: 'var(--text3)', marginBottom: 16 }}>
-              Select users to add:
+              Select users to add to this trip:
             </p>
             {available.map(u => (
               <div
@@ -554,12 +570,12 @@ function MemberModal({ tripId, allUsers, existingMemberIds, onClose, onSaved }) 
                 }}
               >
                 <div className="avatar">{u.name?.[0]?.toUpperCase()}</div>
-                <div>
+                <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{u.name}</div>
                   <div style={{ fontSize: 12, color: 'var(--text3)' }}>{u.email}</div>
                 </div>
                 {selected.includes(u.id) && (
-                  <span style={{ marginLeft: 'auto', color: 'var(--accent)' }}>✓</span>
+                  <span style={{ color: 'var(--accent)', fontSize: 18 }}>✓</span>
                 )}
               </div>
             ))}
@@ -567,7 +583,7 @@ function MemberModal({ tripId, allUsers, existingMemberIds, onClose, onSaved }) 
         )}
 
         <div className="modal-actions">
-          <button className="btn btn-ghost"   onClick={onClose}>Cancel</button>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button
             className="btn btn-primary"
             onClick={handleSave}
@@ -575,7 +591,9 @@ function MemberModal({ tripId, allUsers, existingMemberIds, onClose, onSaved }) 
           >
             {saving
               ? 'Adding…'
-              : `Add ${selected.length > 0 ? selected.length + ' ' : ''}Member${selected.length !== 1 ? 's' : ''}`
+              : selected.length > 0
+                ? `Add ${selected.length} Member${selected.length !== 1 ? 's' : ''}`
+                : 'Select Members'
             }
           </button>
         </div>
