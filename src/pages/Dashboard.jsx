@@ -155,14 +155,21 @@ function TripModal({ onClose, onSaved }) {
   const [error,       setError]       = useState('')
 
   async function handleSave() {
-    if (!name.trim()) { setError('Trip name is required'); return }
+    if (!name.trim()) { setError("Trip name is required"); return }
     setSaving(true)
+    setError("")
     const { error: err } = await supabase
-      .from('trips')
+      .from("trips")
       .insert({ name: name.trim(), description: description.trim() })
+      .select()
     setSaving(false)
-    if (err) { setError(err.message); return }
-    onSaved(); onClose()
+    if (err) {
+      console.error("Trip insert error:", err)
+      setError(`Error: ${err.message} (code: ${err.code})`)
+      return
+    }
+    onSaved()
+    onClose()
   }
 
   return (
